@@ -1,75 +1,48 @@
-;; Define the contract's data variables
-(define-map deposits { owner: principal } { amount: uint })
-(define-map loans principal { amount: uint, last-interaction-block: uint })
+;; Define the employees' data variables
+(define-map skill-levels { employee: principal } { level: uint })
+(define-map skill-levels { skill-level: uint } { payment-amount: uint })
+(define-map skill-tests { test-id: uint } { payment-amount: uint })
 
-(define-data-var total-deposits uint u0)
-(define-data-var total-loans uint u0)
-(define-data-var pool-reserve uint u0)
-(define-data-var loan-interest-rate uint u10) ;; Representing 10% interest rate
+(define-data-var skill-levels { level-1: uint, level-2: uint, level-3: uint, level-4: uint })
 
-;; Users deposit sBTC into the contract
-(define-public (deposit (amount uint))
-    (let (
-        (current-balance (default-to u0 (get amount (map-get? deposits { owner: tx-sender }))))
-        )
-        (try! (contract-call? .asset transfer amount tx-sender (as-contract tx-sender) none))
-        (map-set deposits { owner: tx-sender } { amount: (+ current-balance amount) })
-        (var-set total-deposits (+ (var-get total-deposits) amount))
-        (ok true)
-    )
+;; Employees' skills get mapped into amount of sBTC they get paid back into their wallet
+(define-public (pay (employee principal) (skill-level uint))
+  (require (is-valid-principal employee))
+  (require (<= skill-level 4)) ;; Assuming skill level ranges from 1 to 4
+
+  (let ((payment-amount (match skill-level
+                          1 (var-get skill-levels level-1)
+                          2 (var-get skill-levels level-2)
+                          3 (var-get skill-levels level-3)
+                          4 (var-get skill-levels level-4)
+                          )))
+    (require (> payment-amount 0)) ;; Ensure payment amount is greater than 0
+
+    ;; Transfer the payment amount to the employee's wallet
+    (try! (contract-call? .asset transfer payment-amount employee (as-contract employee) none))
+    (ok true)
+  )
 )
 
-;; Users can borrow sBTC
-(define-public (borrow (amount uint))
-    (let (
-        (user-deposit (default-to u0 (get amount (map-get? deposits { owner: tx-sender }))))
-        (allowed-borrow (/ user-deposit u2))
-        (current-loan-details (default-to { amount: u0, last-interaction-block: u0 } (map-get? loans tx-sender )))
-        (accrued-interest (calculate-accrued-interest (get amount current-loan-details) (get last-interaction-block current-loan-details)))
-        (total-due (+ (get amount current-loan-details) (unwrap! accrued-interest (err u8))))
-        (new-loan (+ total-due amount))
+(define-public (take-test (employee principal) (test-id uint))
+  (require (is-valid-principal employee))
+  (require (map-contains? skill-tests { test-id: test-id })) ;; Check if the test exists
+
+  (let ((payment-amount (map-get? skill-tests { test-id: test-id })))
+    (require (> payment-amount 0)) ;; Ensure payment amount is greater than 0
+
+    ;; Transfer the payment amount from the employee's wallet to the firm's wallet
+    (try! (contract-call? .asset transfer payment-amount employee (as-contract firm-wallet) none))
+
+    ;; Simulate a 50% chance of passing the test
+    (let ((pass (<= (random-u8) 127))) ;; Assuming random-u8 generates a random number between 0 and 255
+      (if pass
+        (let ((nft-badge (create-nft-badge employee test-id))) ;; Create an NFT badge for the employee
+          (try! (contract-call? .asset transfer-nft nft-badge employee (as-contract employee) none)) ;; Transfer the NFT badge to the employee's wallet
+          (ok nft-badge))
+        (ok false)
+      )
     )
-        (asserts! (<= amount allowed-borrow) (err u7))
-        (try! (contract-call? .asset transfer amount (as-contract tx-sender) tx-sender none))
-        (map-set loans tx-sender { amount: new-loan, last-interaction-block: block-height })
-        (ok true)
-    )
+  )
 )
 
-
-;; Users can repay their sBTC loans
-(define-public (repay (amount uint))
-    (let (
-        (current-loan-details (default-to { amount: u0, last-interaction-block: u0 } (map-get? loans tx-sender )))
-        (accrued-interest (calculate-accrued-interest (get amount current-loan-details) (get last-interaction-block current-loan-details)))
-        (total-due (+ (get amount current-loan-details) (unwrap! accrued-interest (err u8))))
-    )
-        (asserts! (>= total-due amount) (err u4))
-        (try! (contract-call? .asset transfer amount tx-sender (as-contract tx-sender) none))
-        (map-set loans tx-sender { amount: (- total-due amount), last-interaction-block: block-height })
-        (var-set total-loans (- (var-get total-loans) amount))
-        (ok true)
-    )
-)
-
-;; Users can claim yield
-(define-public (claim-yield)
-    (let (
-        (user-deposit (default-to u0 (get amount (map-get? deposits { owner: tx-sender }))))
-        (yield-amount (/ (* (var-get pool-reserve) user-deposit) (var-get total-deposits)))
-    )
-        (try! (contract-call? .asset transfer yield-amount (as-contract tx-sender) tx-sender none))
-        (var-set pool-reserve (- (var-get pool-reserve) yield-amount))
-        (ok true)
-    )
-)
-
-(define-private (calculate-accrued-interest (principal uint) (start-block uint))
-    (let (
-        (elapsed-blocks (- block-height start-block))
-        (interest (/ (* principal (var-get loan-interest-rate) elapsed-blocks) u10000))
-    )
-        (asserts! (not (is-eq start-block u0)) (ok u0))
-       (ok interest)
-    )
-)
